@@ -16,29 +16,33 @@ const clearRentalSession = (userId) => {
     delete rentalSession[userId];
 };
 
-const registerRental = (bot, botManager) => {
+const getRentalPrice = () => {
+    delete require.cache[require.resolve('../../config/owner.json')];
     const ownerConfig = require('../../config/owner.json');
-    const RENTAL_PRICE = ownerConfig.rentalPrice || 50000;
+    return ownerConfig.rentalPrice || 50000;
+};
+
+const registerRental = (bot, botManager) => {
 
     bot.action('menu_rental', async (ctx) => {
         await ctx.answerCbQuery();
         const session = getRentalSession(ctx.from.id);
         session.months = 1;
-        return showRentalOffer(ctx, session.months, RENTAL_PRICE, true);
+        return showRentalOffer(ctx, session.months, getRentalPrice(), true);
     });
 
     bot.action('rental_plus', async (ctx) => {
         await ctx.answerCbQuery();
         const session = getRentalSession(ctx.from.id);
         session.months = Math.min(session.months + 1, 12);
-        return showRentalOffer(ctx, session.months, RENTAL_PRICE, true);
+        return showRentalOffer(ctx, session.months, getRentalPrice(), true);
     });
 
     bot.action('rental_minus', async (ctx) => {
         await ctx.answerCbQuery();
         const session = getRentalSession(ctx.from.id);
         session.months = Math.max(session.months - 1, 1);
-        return showRentalOffer(ctx, session.months, RENTAL_PRICE, true);
+        return showRentalOffer(ctx, session.months, getRentalPrice(), true);
     });
 
     bot.action(/^rental_edit_(\d+)$/, async (ctx) => {
@@ -46,12 +50,15 @@ const registerRental = (bot, botManager) => {
         const months = parseInt(ctx.match[1]);
         const session = getRentalSession(ctx.from.id);
         session.months = months;
-        return showRentalOffer(ctx, session.months, RENTAL_PRICE, true);
+        return showRentalOffer(ctx, session.months, getRentalPrice(), true);
     });
 
     bot.action('rental_pay', async (ctx) => {
         await ctx.answerCbQuery('Sedang membuat pembayaran...');
         const session = getRentalSession(ctx.from.id);
+        delete require.cache[require.resolve('../../config/owner.json')];
+        const ownerConfig = require('../../config/owner.json');
+        const RENTAL_PRICE = getRentalPrice();
         const total = RENTAL_PRICE * session.months;
 
         if (!ownerConfig.ownerVioletpay || !ownerConfig.ownerVioletpay.apiKey) {
@@ -146,6 +153,8 @@ const registerRental = (bot, botManager) => {
         await ctx.answerCbQuery('Mengecek pembayaran...');
         const session = getRentalSession(ctx.from.id);
 
+        delete require.cache[require.resolve('../../config/owner.json')];
+        const ownerConfig = require('../../config/owner.json');
         if (!ownerConfig.ownerVioletpay) return ctx.reply('❌ Config error');
 
         const { apiKey, secretKey, isProduction } = ownerConfig.ownerVioletpay;
