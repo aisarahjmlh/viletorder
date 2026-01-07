@@ -9,7 +9,7 @@ const { registerUserList } = require('./userlist');
 const { registerBackup } = require('./backup');
 const { registerCheckBalance } = require('./checkBalance');
 
-const registerAdminHandlers = (bot, db) => {
+const registerAdminHandlers = (bot, db, botConfig = {}) => {
     registerFoto(bot, db);
     registerCategory(bot, db);
     registerProduct(bot, db);
@@ -19,7 +19,7 @@ const registerAdminHandlers = (bot, db) => {
     registerPaymentGateway(bot, db);
     registerUserList(bot, db);
     registerBackup(bot, db);
-    registerCheckBalance(bot, db);
+    registerCheckBalance(bot, db, botConfig);
 };
 
 module.exports = { registerAdminHandlers };

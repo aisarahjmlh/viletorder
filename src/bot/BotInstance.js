@@ -24,7 +24,7 @@ class BotInstance {
     registerHandlers() {
         this.bot.use(isMember(this.db));
         registerStart(this.bot, this.db, this.config);
-        registerAdminHandlers(this.bot, this.db);
+        registerAdminHandlers(this.bot, this.db, this.config);
         registerMemberHandlers(this.bot, this.db);
 
         this.bot.catch((err, ctx) => {

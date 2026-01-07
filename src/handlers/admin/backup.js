@@ -76,17 +76,16 @@ const registerBackup = (bot, db) => {
         const args = ctx.message.text.split(' ').slice(1);
         const botId = db.botId;
 
-        // /backup - Manual backup
+        // /backup - Manual backup (always backup bot folder only)
         if (args.length === 0) {
             ctx.reply('⏳ Membuat backup...');
 
             try {
-                // Owner gets full backup, admin gets single bot backup
-                const { zipPath, zipName } = await createBackupZip(botId, isOwner);
+                const { zipPath, zipName } = await createBackupZip(botId, false);
 
                 await ctx.replyWithDocument(
                     { source: zipPath, filename: zipName },
-                    { caption: `✅ Backup berhasil!\n📁 ${zipName}\n${isOwner ? '🔐 Mode: Full Backup (Owner)' : '👤 Mode: Bot Backup'}` }
+                    { caption: `✅ Backup berhasil!\n📁 ${zipName}\n📂 Folder: bot_${botId}` }
                 );
 
                 // Clean up temp file
@@ -118,12 +117,12 @@ const registerBackup = (bot, db) => {
             // Start new interval
             const intervalId = setInterval(async () => {
                 try {
-                    const { zipPath, zipName } = await createBackupZip(botId, isOwner);
+                    const { zipPath, zipName } = await createBackupZip(botId, false);
 
                     await bot.telegram.sendDocument(
                         ctx.from.id,
                         { source: zipPath, filename: zipName },
-                        { caption: `🔄 Auto Backup\n📁 ${zipName}\n${isOwner ? '🔐 Mode: Full Backup (Owner)' : '👤 Mode: Bot Backup'}` }
+                        { caption: `🔄 Auto Backup\n📁 ${zipName}\n📂 Folder: bot_${botId}` }
                     );
 
                     fs.unlinkSync(zipPath);

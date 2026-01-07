@@ -81,6 +81,26 @@ async function calculateFee(apiKey, secretKey, code, amount, isProduction = fals
     }
 }
 
+async function checkBalance(apiKey, secretKey, isProduction = false) {
+    const url = `${getBaseUrl(isProduction)}/balance`;
+
+    const params = new URLSearchParams();
+    params.append('api_key', apiKey);
+    params.append('secret_key', secretKey);
+    params.append('method', 'balance');
+
+    try {
+        const response = await axios.post(url, params, {
+            timeout: 10000,
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        });
+        return response.data || { success: false, error: 'Empty response' };
+    } catch (error) {
+        console.error('VioletPay Balance Error:', error?.message || error);
+        return { success: false, error: error?.message || 'Connection error' };
+    }
+}
+
 async function checkTransaction(apiKey, secretKey, ref, refId, isProduction = false) {
     const url = `${getBaseUrl(isProduction)}/transactions`;
 
@@ -114,8 +134,8 @@ async function createQrisPayment(apiKey, secretKey, amount, customer, productNam
     params.append('cus_email', customer.email || 'customer@email.com');
     params.append('cus_phone', customer.phone || '08123456789');
     params.append('produk', productName);
-    params.append('url_redirect', 'https://google.com');
-    params.append('url_callback', 'https://google.com');
+    params.append('url_redirect', 'https://t.me/violetmakerbot');
+    params.append('url_callback', 'https://t.me/violetmakerbot');
     params.append('expired_time', expiredTime.toString());
     params.append('signature', signature);
 
@@ -167,6 +187,7 @@ function verifyCallbackSignature(refId, apiKey, receivedSignature) {
 module.exports = {
     getChannelPayment,
     calculateFee,
+    checkBalance,
     checkTransaction,
     createQrisPayment,
     generateSignature,

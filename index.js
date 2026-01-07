@@ -9,7 +9,7 @@ async function main() {
 
     try {
         await botManager.startAllBots();
-        console.log(`✅ MEMUAT ${botManager.runningBots.size} BOT YANG TERDAFTAR\n`);
+        console.log(`✅ MEMUAT ${botManager.runningBots.size} BOT YANG TERDAFTAR ✅\n`);
 
         await new Promise(resolve => setTimeout(resolve, 2000));
 
@@ -18,10 +18,10 @@ async function main() {
 
         await new Promise(r => setTimeout(r, 2000));
         const info = await mainBot.telegram.getMe();
-        console.log(`✅ BOT UTAMA @${info.username} BERHASIL DI JALANKAN BOS\n`);
+        console.log(`✅ BOT UTAMA @${info.username} BERHASIL DI JALANKAN ✅ \n`);
 
         botManager.startExpirationMonitor();
-        console.log(`🔄 MENGECEK BOT EXPIRED SETIAP 30 DETIK\n`);
+        console.log(`🔄 MENGECEK BOT EXPIRED SETIAP 30 DETIK 🔄\n`);
 
         process.once('SIGINT', async () => {
             console.log('\n🛑 Shutting down...');

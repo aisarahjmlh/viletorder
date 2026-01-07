@@ -150,7 +150,7 @@ const registerRental = (bot, botManager) => {
 
     bot.action(/^check_rental_(.+)$/, async (ctx) => {
         const refKode = ctx.match[1];
-        await ctx.answerCbQuery('Mengecek pembayaran...');
+        await ctx.answerCbQuery('⏳ Mengecek...');
         const session = getRentalSession(ctx.from.id);
 
         delete require.cache[require.resolve('../../config/owner.json')];
@@ -185,10 +185,7 @@ const registerRental = (bot, botManager) => {
                     [Markup.button.callback('🔙 Kembali', 'menu_rental')]
                 ]));
             } else {
-                return ctx.reply(`⏳ Status: Menunggu pembayaran\n\nScan QRIS untuk bayar.`, Markup.inlineKeyboard([
-                    [Markup.button.callback('🔄 Cek Lagi', `check_rental_${refKode}`)],
-                    [Markup.button.callback('❌ Batal', 'cancel_rental')]
-                ]));
+                return;
             }
         } catch (error) {
             return ctx.reply('❌ Error: ' + error.message);

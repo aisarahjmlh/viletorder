@@ -30,13 +30,14 @@ const clearEditMode = (userId) => {
     delete editSession[userId];
 };
 
-const setDepositMode = (userId, state) => {
-    if (state) depositSession[userId] = true;
-    else delete depositSession[userId];
+const setDepositMode = (botId, userId, state) => {
+    const key = `${botId}_${userId}`;
+    if (state) depositSession[key] = true;
+    else delete depositSession[key];
 };
 
-const isDepositMode = (userId) => {
-    return !!depositSession[userId];
+const isDepositMode = (botId, userId) => {
+    return !!depositSession[`${botId}_${userId}`];
 };
 
 
@@ -159,6 +160,7 @@ const registerStart = (bot, db, botConfig = {}) => {
 
 
             const welcomeText = db.getSetting('welcomeText');
+            const saldo = getMemberSaldo(db, ctx.from.id);
             let msg;
 
             if (welcomeText) {
@@ -230,7 +232,7 @@ const registerStart = (bot, db, botConfig = {}) => {
     });
 
     bot.action('menu_deposit', (ctx) => {
-        setDepositMode(ctx.from.id, true);
+        setDepositMode(db.botId, ctx.from.id, true);
         return ctx.reply('Silakan konfirmasi jumlah deposit dengan mengirimkan angka (Contoh: 10000):', Markup.forceReply());
     });
 
@@ -283,6 +285,7 @@ const registerStart = (bot, db, botConfig = {}) => {
         msg += `┊  📢 /broadcast - Broadcast ke member\n`;
         msg += `┊  💳 /setpg qris/qrisc - Set payment\n`;
         msg += `┊  👥 /listuser - Daftar member\n`;
+        msg += `┊ 👥  /checkbalance - Toal Saldo VIOLET-PAYMENT\n`;
         msg += `┊  💾 /backup - Backup database\n`;
         msg += `┊  📝 /setwelc - Set welcome text\n`;
         if (expInfo) {
@@ -457,10 +460,10 @@ const registerStart = (bot, db, botConfig = {}) => {
         const userId = ctx.from.id;
 
 
-        if (isDepositMode(userId)) {
+        if (isDepositMode(db.botId, userId)) {
             const amount = parseInt(ctx.message.text.replace(/[^0-9]/g, ''));
             if (!isNaN(amount) && amount >= 1000) {
-                setDepositMode(userId, false);
+                setDepositMode(db.botId, userId, false);
                 return processDeposit(ctx, db, amount, botConfig);
             } else {
                 return ctx.reply('❌ Harap masukkan jumlah deposit yang valid (Minimal 1000).');
@@ -494,7 +497,7 @@ const registerStart = (bot, db, botConfig = {}) => {
 
     bot.action(/^check_payment_(.+)$/, async (ctx) => {
         const refKode = ctx.match[1];
-        await ctx.answerCbQuery('Mengecek status pembayaran...');
+        await ctx.answerCbQuery('⏳ Mengecek...');
 
         if (!botConfig.violetpay || !botConfig.violetpay.apiKey) {
             return ctx.reply('❌ VioletPay tidak dikonfigurasi');
@@ -523,7 +526,6 @@ const registerStart = (bot, db, botConfig = {}) => {
             const statusLower = String(txStatus).toLowerCase();
 
             if (statusLower === 'success' || statusLower === 'sukses' || statusLower === 'dibayar') {
-
                 const idx = pendingOrders.findIndex(o => o.refKode === refKode);
                 if (idx > -1) pendingOrders.splice(idx, 1);
                 db.write('pending_orders.json', pendingOrders);
@@ -556,21 +558,13 @@ const registerStart = (bot, db, botConfig = {}) => {
                 }
 
             } else if (statusLower === 'kadaluarsa' || statusLower === 'expired') {
-
                 const idx = pendingOrders.findIndex(o => o.refKode === refKode);
                 if (idx > -1) pendingOrders.splice(idx, 1);
                 db.write('pending_orders.json', pendingOrders);
 
                 return ctx.reply('❌ Pembayaran sudah kadaluarsa', Markup.inlineKeyboard([[Markup.button.callback('🔙 Menu', 'back_to_cat')]]));
             } else {
-
-                const displayStatus = typeof txStatus === 'boolean' ? 'Menunggu pembayaran' : txStatus;
-                return ctx.reply(`⏳ Status: ${displayStatus}\n\nSilakan scan QRIS untuk melakukan pembayaran.`,
-                    Markup.inlineKeyboard([
-                        [Markup.button.callback('🔄 Cek Lagi', `check_payment_${refKode}`)],
-                        [Markup.button.callback('❌ Batal', 'back_to_cat')]
-                    ])
-                );
+                return;
             }
         } catch (error) {
             return ctx.reply(`❌ Error: ${error.message}`);

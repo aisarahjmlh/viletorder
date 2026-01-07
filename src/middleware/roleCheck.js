@@ -35,8 +35,6 @@ const isMember = (db) => (ctx, next) => {
 };
 
 const getRole = (db, userId, username) => {
-    if (userId === ownerConfig.ownerId) return 'owner';
-
     const adminUsername = db.getSetting('adminUsername');
     if (adminUsername && username) {
         // Support multiple admins separated by comma
