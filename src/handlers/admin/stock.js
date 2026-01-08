@@ -1,8 +1,10 @@
+const { getOwnerId } = require('../../middleware/roleCheck');
+
 const registerStock = (bot, db) => {
-    bot.command('addst', (ctx) => {
-        const ownerConfig = require('../../../config/owner.json');
-        const adminUsername = db.getSetting('adminUsername');
-        const isOwner = ctx.from.id === ownerConfig.ownerId;
+    bot.command('addst', async (ctx) => {
+        const ownerId = await getOwnerId();
+        const adminUsername = await db.getSetting('adminUsername');
+        const isOwner = ctx.from.id === ownerId;
         const adminList = adminUsername ? adminUsername.split(',').map(a => a.trim().toLowerCase()) : [];
         const isAdmin = ctx.from.username && adminList.includes(ctx.from.username.toLowerCase());
         if (!isOwner && !isAdmin) return ctx.reply('⛔ Akses ditolak');
@@ -21,22 +23,20 @@ const registerStock = (bot, db) => {
             return ctx.reply('⚠️ Masukkan stok di baris baru setelah code');
         }
 
-        const products = db.read('products.json');
-        const product = products.find(p => p.code.toLowerCase() === code.toLowerCase());
-
+        const product = await db.getProduct(code);
         if (!product) {
             return ctx.reply(`⚠️ Produk "${code}" tidak ditemukan`);
         }
 
-        product.stock.push(...stockItems);
-        db.write('products.json', products);
-        ctx.reply(`✅ ${stockItems.length} stok ditambahkan ke ${product.name}\nTotal stok: ${product.stock.length}`);
+        await db.addStock(code, stockItems);
+        const newCount = await db.getStockCount(code);
+        ctx.reply(`✅ ${stockItems.length} stok ditambahkan ke ${product.name}\nTotal stok: ${newCount}`);
     });
 
-    bot.command('delst', (ctx) => {
-        const ownerConfig = require('../../../config/owner.json');
-        const adminUsername = db.getSetting('adminUsername');
-        const isOwner = ctx.from.id === ownerConfig.ownerId;
+    bot.command('delst', async (ctx) => {
+        const ownerId = await getOwnerId();
+        const adminUsername = await db.getSetting('adminUsername');
+        const isOwner = ctx.from.id === ownerId;
         const adminList = adminUsername ? adminUsername.split(',').map(a => a.trim().toLowerCase()) : [];
         const isAdmin = ctx.from.username && adminList.includes(ctx.from.username.toLowerCase());
         if (!isOwner && !isAdmin) return ctx.reply('⛔ Akses ditolak');
@@ -50,30 +50,25 @@ const registerStock = (bot, db) => {
         const code = args[0];
         const amount = args[1] ? parseInt(args[1]) : null;
 
-        const products = db.read('products.json');
-        const product = products.find(p => p.code.toLowerCase() === code.toLowerCase());
-
+        const product = await db.getProduct(code);
         if (!product) {
             return ctx.reply(`⚠️ Produk "${code}" tidak ditemukan`);
         }
 
-        if (product.stock.length === 0) {
+        const currentStock = await db.getStockCount(code);
+        if (currentStock === 0) {
             return ctx.reply(`⚠️ Stok produk "${product.name}" sudah kosong`);
         }
 
         let deleted = 0;
         if (amount && amount > 0) {
-            // Delete specific amount
-            deleted = Math.min(amount, product.stock.length);
-            product.stock.splice(0, deleted);
+            deleted = await db.deleteStock(code, amount);
         } else {
-            // Delete all stock
-            deleted = product.stock.length;
-            product.stock = [];
+            deleted = await db.deleteStock(code, currentStock);
         }
 
-        db.write('products.json', products);
-        ctx.reply(`✅ ${deleted} stok dihapus dari ${product.name}\nSisa stok: ${product.stock.length}`);
+        const newStock = await db.getStockCount(code);
+        ctx.reply(`✅ ${deleted} stok dihapus dari ${product.name}\nSisa stok: ${newStock}`);
     });
 };
 

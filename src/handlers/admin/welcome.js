@@ -1,16 +1,17 @@
+const { getOwnerId } = require('../../middleware/roleCheck');
+const pool = require('../../database/db');
+
 const registerWelcome = (bot, db) => {
-    bot.command('setwelc', (ctx) => {
-        const ownerConfig = require('../../../config/owner.json');
-        const adminUsername = db.getSetting('adminUsername');
+    bot.command('setwelc', async (ctx) => {
+        const ownerId = await getOwnerId();
+        const adminUsername = await db.getSetting('adminUsername');
         const userUsername = ctx.from.username;
 
-        const isOwner = ctx.from.id === ownerConfig.ownerId;
+        const isOwner = ctx.from.id === ownerId;
         const adminList = adminUsername ? adminUsername.split(',').map(a => a.trim().toLowerCase()) : [];
         const isAdmin = userUsername && adminList.includes(userUsername.toLowerCase());
         const isMainBot = db.botId === 'main';
 
-        // Main bot: only owner can set welcome (for rental page)
-        // Child bot: admin can set welcome (for member start page)
         if (isMainBot && !isOwner) {
             return ctx.reply('⛔ Akses ditolak. Hanya owner.');
         }
@@ -21,7 +22,7 @@ const registerWelcome = (bot, db) => {
         const text = ctx.message.text.split(' ').slice(1).join(' ');
 
         if (!text) {
-            const current = db.getSetting('welcomeText');
+            const current = await db.getSetting('welcomeText');
             let helpMsg = `📝 *SET WELCOME TEXT*\n\n`;
             helpMsg += `Format: /setwelc <teks>\n\n`;
             helpMsg += `*Variable yang tersedia:*\n`;
@@ -47,15 +48,14 @@ const registerWelcome = (bot, db) => {
         }
 
         if (text.toLowerCase() === 'hapus') {
-            db.setSetting('welcomeText', null);
+            await db.setSetting('welcomeText', null);
             return ctx.reply('✅ Welcome text berhasil dihapus. Akan menggunakan teks default.');
         }
 
-        db.setSetting('welcomeText', text);
+        await db.setSetting('welcomeText', text);
 
-        // Generate preview with sample data
-        const stats = db.getStats();
-        const members = db.getMembers();
+        const stats = await db.getStats();
+        const members = await db.getMembers();
         const now = new Date();
         const tanggalWIB = now.toLocaleString('id-ID', {
             timeZone: 'Asia/Jakarta',
@@ -86,13 +86,12 @@ const registerWelcome = (bot, db) => {
         ctx.reply(`✅ Welcome text berhasil disimpan!\n\n*Preview:*\n${preview}`, { parse_mode: 'Markdown' });
     });
 
-    // Set Rating Command
-    bot.command('setrating', (ctx) => {
-        const ownerConfig = require('../../../config/owner.json');
-        const adminUsername = db.getSetting('adminUsername');
+    bot.command('setrating', async (ctx) => {
+        const ownerId = await getOwnerId();
+        const adminUsername = await db.getSetting('adminUsername');
         const userUsername = ctx.from.username;
 
-        const isOwner = ctx.from.id === ownerConfig.ownerId;
+        const isOwner = ctx.from.id === ownerId;
         const adminList = adminUsername ? adminUsername.split(',').map(a => a.trim().toLowerCase()) : [];
         const isAdmin = userUsername && adminList.includes(userUsername.toLowerCase());
 
@@ -103,11 +102,11 @@ const registerWelcome = (bot, db) => {
         const args = ctx.message.text.split(' ').slice(1);
 
         if (args.length < 2) {
-            const stats = db.getStats();
+            const stats = await db.getStats();
             const currentRating = stats.rating && stats.rating.count > 0
                 ? `${stats.rating.total} / 5.0 (${stats.rating.count} ulasan)`
                 : 'Belum ada rating';
-            return ctx.reply(`⭐ *SET RATING BOT*\n\nFormat: /setrating <rating> <jumlah_ulasan>\nContoh: /setrating 4.9 149\n\nRating saat ini: ${currentRating}`, { parse_mode: 'Markdown' });
+            return ctx.reply(`⭐ SET RATING BOT\n\nFormat: /setrating [rating] [jumlah_ulasan]\nContoh: /setrating 4.9 149\n\nRating saat ini: ${currentRating}`);
         }
 
         const rating = parseFloat(args[0]);
@@ -120,27 +119,24 @@ const registerWelcome = (bot, db) => {
             return ctx.reply('❌ Jumlah ulasan harus angka positif');
         }
 
-        db.setRating(rating, count);
+        await db.setRating(rating, count);
         ctx.reply(`✅ Rating berhasil diupdate!\n\n⭐ Rating: ${rating} / 5.0 (${count} ulasan)`);
     });
 
-    bot.command('setprice', (ctx) => {
-        const fs = require('fs');
-        const path = require('path');
+    bot.command('setprice', async (ctx) => {
+        const ownerId = await getOwnerId();
 
-        // Clear cache to always get latest price
-        delete require.cache[require.resolve('../../../config/owner.json')];
-        const ownerConfig = require('../../../config/owner.json');
-
-        // Only owner can set price
-        if (ctx.from.id !== ownerConfig.ownerId) {
+        if (ctx.from.id !== ownerId) {
             return ctx.reply('⛔ Akses ditolak. Hanya owner.');
         }
 
         const args = ctx.message.text.split(' ').slice(1);
 
+        // Get current price from MySQL
+        const [rows] = await pool.query('SELECT rental_price FROM owner_config LIMIT 1');
+        const currentPrice = rows.length > 0 ? rows[0].rental_price : 50000;
+
         if (args.length === 0) {
-            const currentPrice = ownerConfig.rentalPrice || 50000;
             return ctx.reply(`💰 *HARGA SEWA BOT*\n\nHarga saat ini: Rp${currentPrice.toLocaleString()}/bulan\n\nFormat: /setprice <nominal>\nContoh: /setprice 50000`, { parse_mode: 'Markdown' });
         }
 
@@ -150,10 +146,11 @@ const registerWelcome = (bot, db) => {
             return ctx.reply('❌ Nominal tidak valid. Minimal Rp1.000');
         }
 
-        // Update owner.json
-        ownerConfig.rentalPrice = price;
-        const configPath = path.join(__dirname, '../../../config/owner.json');
-        fs.writeFileSync(configPath, JSON.stringify(ownerConfig, null, 4));
+        // Update in MySQL
+        await pool.query(
+            'UPDATE owner_config SET rental_price = ? WHERE id = (SELECT id FROM (SELECT id FROM owner_config LIMIT 1) AS t)',
+            [price]
+        );
 
         ctx.reply(`✅ Harga sewa berhasil diubah!\n\n💰 Harga baru: Rp${price.toLocaleString()}/bulan`);
     });

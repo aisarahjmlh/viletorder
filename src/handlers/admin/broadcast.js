@@ -1,4 +1,5 @@
 const { Markup } = require('telegraf');
+const { getOwnerId } = require('../../middleware/roleCheck');
 
 const broadcastSession = {};
 
@@ -13,11 +14,11 @@ const isBroadcastMode = (userId) => {
 
 const registerBroadcast = (bot, db) => {
     bot.command('broadcast', async (ctx) => {
-        const ownerConfig = require('../../../config/owner.json');
-        const adminUsername = db.getSetting('adminUsername');
+        const ownerId = await getOwnerId();
+        const adminUsername = await db.getSetting('adminUsername');
         const userUsername = ctx.from.username;
 
-        const isOwner = ctx.from.id === ownerConfig.ownerId;
+        const isOwner = ctx.from.id === ownerId;
         const adminList = adminUsername ? adminUsername.split(',').map(a => a.trim().toLowerCase()) : [];
         const isAdmin = userUsername && adminList.includes(userUsername.toLowerCase());
 
@@ -43,7 +44,7 @@ const registerBroadcast = (bot, db) => {
 
         setBroadcastMode(userId, false);
 
-        const members = db.read('members.json') || [];
+        const members = await db.getMembers();
         const targets = members.map(m => m.userId).filter(id => id);
 
         if (targets.length === 0) {

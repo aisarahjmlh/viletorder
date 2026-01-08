@@ -1,28 +1,90 @@
-const fs = require('fs');
-const path = require('path');
 const { Telegraf } = require('telegraf');
 const BotInstance = require('./BotInstance');
 const { registerBotCommands } = require('../handlers');
+const pool = require('../database/db');
 
 class BotManager {
     constructor() {
-        this.botsFile = path.join(__dirname, '../../data/bots.json');
         this.runningBots = new Map();
     }
 
-    loadBotsData() {
-        if (!fs.existsSync(this.botsFile)) {
-            return { bots: [] };
-        }
-        return JSON.parse(fs.readFileSync(this.botsFile, 'utf8'));
+    async loadBotsData() {
+        const [rows] = await pool.query(
+            `SELECT id, username, token, admin_username as adminUsername, 
+             violetpay_api_key, violetpay_secret_key, violetpay_is_production,
+             expires_at as expiresAt, added_at as addedAt
+             FROM bots WHERE id != 'main'`
+        );
+        return {
+            bots: rows.map(row => ({
+                id: row.id,
+                username: row.username,
+                token: row.token,
+                adminUsername: row.adminUsername,
+                violetpay: row.violetpay_api_key ? {
+                    apiKey: row.violetpay_api_key,
+                    secretKey: row.violetpay_secret_key,
+                    isProduction: row.violetpay_is_production
+                } : null,
+                expiresAt: row.expiresAt,
+                addedAt: row.addedAt
+            }))
+        };
     }
 
-    saveBotsData(data) {
-        fs.writeFileSync(this.botsFile, JSON.stringify(data, null, 2));
+    async saveBot(botData) {
+        await pool.query(
+            `INSERT INTO bots (id, username, token, admin_username, violetpay_api_key, violetpay_secret_key, violetpay_is_production, expires_at, added_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+             username = VALUES(username),
+             admin_username = VALUES(admin_username),
+             violetpay_api_key = VALUES(violetpay_api_key),
+             violetpay_secret_key = VALUES(violetpay_secret_key),
+             violetpay_is_production = VALUES(violetpay_is_production),
+             expires_at = VALUES(expires_at)`,
+            [
+                botData.id,
+                botData.username,
+                botData.token,
+                botData.adminUsername || null,
+                botData.violetpay?.apiKey || null,
+                botData.violetpay?.secretKey || null,
+                botData.violetpay?.isProduction ?? true,
+                botData.expiresAt ? new Date(botData.expiresAt) : null,
+                botData.addedAt ? new Date(botData.addedAt) : new Date()
+            ]
+        );
     }
 
-    getBots() {
-        return this.loadBotsData().bots;
+    async getBots() {
+        const data = await this.loadBotsData();
+        return data.bots;
+    }
+
+    async getBot(botId) {
+        const [rows] = await pool.query(
+            `SELECT id, username, token, admin_username as adminUsername,
+             violetpay_api_key, violetpay_secret_key, violetpay_is_production,
+             expires_at as expiresAt, added_at as addedAt
+             FROM bots WHERE id = ?`,
+            [botId]
+        );
+        if (rows.length === 0) return null;
+        const row = rows[0];
+        return {
+            id: row.id,
+            username: row.username,
+            token: row.token,
+            adminUsername: row.adminUsername,
+            violetpay: row.violetpay_api_key ? {
+                apiKey: row.violetpay_api_key,
+                secretKey: row.violetpay_secret_key,
+                isProduction: row.violetpay_is_production
+            } : null,
+            expiresAt: row.expiresAt,
+            addedAt: row.addedAt
+        };
     }
 
     async addBot(token, violetConfig = null, adminUsername = null, expiresAt = null) {
@@ -30,10 +92,8 @@ class BotManager {
             const tempBot = new Telegraf(token);
             const info = await tempBot.telegram.getMe();
 
-            const data = this.loadBotsData();
-            const exists = data.bots.find(b => b.id === info.id.toString());
-
-            if (exists) {
+            const [existing] = await pool.query('SELECT id FROM bots WHERE id = ?', [info.id.toString()]);
+            if (existing.length > 0) {
                 return { success: false, error: 'Bot sudah terdaftar' };
             }
 
@@ -41,33 +101,20 @@ class BotManager {
                 id: info.id.toString(),
                 username: info.username,
                 token: token,
+                adminUsername: adminUsername,
+                violetpay: violetConfig,
+                expiresAt: expiresAt,
                 addedAt: new Date().toISOString()
             };
 
-            if (adminUsername) {
-                newBot.adminUsername = adminUsername;
-            }
+            await this.saveBot(newBot);
 
-            if (violetConfig) {
-                newBot.violetpay = violetConfig;
-            }
-
-            if (expiresAt) {
-                newBot.expiresAt = expiresAt;
-            }
-
-            data.bots.push(newBot);
-
-            this.saveBotsData(data);
-
-            // Initialize database with stats for new bot
-            const Database = require('../database/Database');
-            const db = new Database(info.id.toString());
-            db.write('stats.json', {
-                totalSales: 0,
-                totalOmzet: 0,
-                rating: { total: 0, count: 0 }
-            });
+            // Initialize stats for new bot
+            await pool.query(
+                `INSERT IGNORE INTO stats (bot_id, total_sales, total_omzet, rating_total, rating_count)
+                 VALUES (?, 0, 0, 0, 0)`,
+                [info.id.toString()]
+            );
 
             const botInstance = new BotInstance(token, this);
             await botInstance.start();
@@ -81,10 +128,8 @@ class BotManager {
 
     async removeBot(botId) {
         try {
-            const data = this.loadBotsData();
-            const index = data.bots.findIndex(b => b.id === botId);
-
-            if (index === -1) {
+            const [existing] = await pool.query('SELECT id FROM bots WHERE id = ?', [botId]);
+            if (existing.length === 0) {
                 return { success: false, error: 'Bot tidak ditemukan' };
             }
 
@@ -93,8 +138,8 @@ class BotManager {
                 this.runningBots.delete(botId);
             }
 
-            data.bots.splice(index, 1);
-            this.saveBotsData(data);
+            // Delete from database (CASCADE will handle related tables)
+            await pool.query('DELETE FROM bots WHERE id = ?', [botId]);
 
             return { success: true };
         } catch (error) {
@@ -102,8 +147,15 @@ class BotManager {
         }
     }
 
+    async updateBotExpiration(botId, newExpiresAt) {
+        await pool.query(
+            'UPDATE bots SET expires_at = ? WHERE id = ?',
+            [new Date(newExpiresAt), botId]
+        );
+    }
+
     async startAllBots() {
-        const data = this.loadBotsData();
+        const data = await this.loadBotsData();
         const now = new Date();
 
         for (const botData of data.bots) {
@@ -135,8 +187,8 @@ class BotManager {
 
     createMainBot(token) {
         const mainBot = new Telegraf(token);
-        const Database = require('../database/Database');
-        const db = new Database('main');
+        const MySQLDatabase = require('../database/MySQLDatabase');
+        const db = new MySQLDatabase('main');
         const { registerStart } = require('../handlers');
         const { registerAdminHandlers } = require('../handlers/admin');
         const { registerRental } = require('../handlers/rental');
@@ -157,7 +209,7 @@ class BotManager {
 
     startExpirationMonitor() {
         setInterval(async () => {
-            const data = this.loadBotsData();
+            const data = await this.loadBotsData();
             const now = new Date();
 
             for (const botData of data.bots) {
@@ -181,9 +233,9 @@ class BotManager {
                             `Bot akan dimatikan.\n` +
                             `Hubungi owner untuk perpanjangan.`;
 
-                        const Database = require('../database/Database');
-                        const db = new Database(botData.id);
-                        const members = db.read('members.json') || [];
+                        const MySQLDatabase = require('../database/MySQLDatabase');
+                        const db = new MySQLDatabase(botData.id);
+                        const members = await db.getMembers();
 
                         for (const member of members) {
                             try {

@@ -1,8 +1,10 @@
+const { getOwnerId } = require('../../middleware/roleCheck');
+
 const registerCategory = (bot, db) => {
-    bot.command('addc', (ctx) => {
-        const ownerConfig = require('../../../config/owner.json');
-        const adminUsername = db.getSetting('adminUsername');
-        const isOwner = ctx.from.id === ownerConfig.ownerId;
+    bot.command('addc', async (ctx) => {
+        const ownerId = await getOwnerId();
+        const adminUsername = await db.getSetting('adminUsername');
+        const isOwner = ctx.from.id === ownerId;
         const adminList = adminUsername ? adminUsername.split(',').map(a => a.trim().toLowerCase()) : [];
         const isAdmin = ctx.from.username && adminList.includes(ctx.from.username.toLowerCase());
         if (!isOwner && !isAdmin) return ctx.reply('⛔ Akses ditolak');
@@ -10,29 +12,27 @@ const registerCategory = (bot, db) => {
         const name = ctx.message.text.split(' ').slice(1).join(' ');
         if (!name) return ctx.reply('⚠️ Format: /addc <nama_category>');
 
-        const categories = db.read('categories.json');
-        if (categories.find(c => c.name.toLowerCase() === name.toLowerCase())) {
+        const result = await db.addCategory(name);
+        if (!result) {
             return ctx.reply('⚠️ Category sudah ada');
         }
 
-        categories.push({ name, createdAt: new Date().toISOString() });
-        db.write('categories.json', categories);
         ctx.reply(`✅ Category "${name}" berhasil ditambahkan`);
     });
 
-    bot.command('listc', (ctx) => {
-        const categories = db.read('categories.json');
+    bot.command('listc', async (ctx) => {
+        const categories = await db.getCategories();
         if (categories.length === 0) return ctx.reply('📭 Belum ada category');
 
         let msg = `📋 Daftar Category (${categories.length})\n\n`;
-        categories.forEach((c, i) => msg += `${i + 1}. ${c.name}\n`);
+        categories.forEach((c, i) => msg += `${i + 1}. ${c}\n`);
         ctx.reply(msg);
     });
 
-    bot.command('delc', (ctx) => {
-        const ownerConfig = require('../../../config/owner.json');
-        const adminUsername = db.getSetting('adminUsername');
-        const isOwner = ctx.from.id === ownerConfig.ownerId;
+    bot.command('delc', async (ctx) => {
+        const ownerId = await getOwnerId();
+        const adminUsername = await db.getSetting('adminUsername');
+        const isOwner = ctx.from.id === ownerId;
         const adminList = adminUsername ? adminUsername.split(',').map(a => a.trim().toLowerCase()) : [];
         const isAdmin = ctx.from.username && adminList.includes(ctx.from.username.toLowerCase());
         if (!isOwner && !isAdmin) return ctx.reply('⛔ Akses ditolak');
@@ -40,16 +40,12 @@ const registerCategory = (bot, db) => {
         const name = ctx.message.text.split(' ').slice(1).join(' ');
         if (!name) return ctx.reply('⚠️ Format: /delc <nama_category>');
 
-        const categories = db.read('categories.json');
-        const index = categories.findIndex(c => c.name.toLowerCase() === name.toLowerCase());
-
-        if (index === -1) {
+        const result = await db.removeCategory(name);
+        if (!result) {
             return ctx.reply(`❌ Category "${name}" tidak ditemukan`);
         }
 
-        const deleted = categories.splice(index, 1)[0];
-        db.write('categories.json', categories);
-        ctx.reply(`✅ Category "${deleted.name}" berhasil dihapus`);
+        ctx.reply(`✅ Category "${name}" berhasil dihapus`);
     });
 };
 

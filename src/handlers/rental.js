@@ -1,7 +1,7 @@
 const { Markup } = require('telegraf');
 const violetpay = require('../violetpay');
 const QRCode = require('qrcode');
-
+const pool = require('../database/db');
 
 const rentalSession = {};
 
@@ -16,10 +16,19 @@ const clearRentalSession = (userId) => {
     delete rentalSession[userId];
 };
 
-const getRentalPrice = () => {
-    delete require.cache[require.resolve('../../config/owner.json')];
-    const ownerConfig = require('../../config/owner.json');
-    return ownerConfig.rentalPrice || 50000;
+const getRentalPrice = async () => {
+    const [rows] = await pool.query('SELECT rental_price FROM owner_config LIMIT 1');
+    return rows.length > 0 ? rows[0].rental_price : 50000;
+};
+
+const getOwnerVioletpay = async () => {
+    const [rows] = await pool.query('SELECT violetpay_api_key, violetpay_secret_key, violetpay_is_production FROM owner_config LIMIT 1');
+    if (rows.length === 0 || !rows[0].violetpay_api_key) return null;
+    return {
+        apiKey: rows[0].violetpay_api_key,
+        secretKey: rows[0].violetpay_secret_key,
+        isProduction: rows[0].violetpay_is_production
+    };
 };
 
 const registerRental = (bot, botManager) => {
@@ -28,21 +37,24 @@ const registerRental = (bot, botManager) => {
         await ctx.answerCbQuery();
         const session = getRentalSession(ctx.from.id);
         session.months = 1;
-        return showRentalOffer(ctx, session.months, getRentalPrice(), true);
+        const price = await getRentalPrice();
+        return showRentalOffer(ctx, session.months, price, true);
     });
 
     bot.action('rental_plus', async (ctx) => {
         await ctx.answerCbQuery();
         const session = getRentalSession(ctx.from.id);
         session.months = Math.min(session.months + 1, 12);
-        return showRentalOffer(ctx, session.months, getRentalPrice(), true);
+        const price = await getRentalPrice();
+        return showRentalOffer(ctx, session.months, price, true);
     });
 
     bot.action('rental_minus', async (ctx) => {
         await ctx.answerCbQuery();
         const session = getRentalSession(ctx.from.id);
         session.months = Math.max(session.months - 1, 1);
-        return showRentalOffer(ctx, session.months, getRentalPrice(), true);
+        const price = await getRentalPrice();
+        return showRentalOffer(ctx, session.months, price, true);
     });
 
     bot.action(/^rental_edit_(\d+)$/, async (ctx) => {
@@ -50,22 +62,22 @@ const registerRental = (bot, botManager) => {
         const months = parseInt(ctx.match[1]);
         const session = getRentalSession(ctx.from.id);
         session.months = months;
-        return showRentalOffer(ctx, session.months, getRentalPrice(), true);
+        const price = await getRentalPrice();
+        return showRentalOffer(ctx, session.months, price, true);
     });
 
     bot.action('rental_pay', async (ctx) => {
         await ctx.answerCbQuery('Sedang membuat pembayaran...');
         const session = getRentalSession(ctx.from.id);
-        delete require.cache[require.resolve('../../config/owner.json')];
-        const ownerConfig = require('../../config/owner.json');
-        const RENTAL_PRICE = getRentalPrice();
+        const ownerVioletpay = await getOwnerVioletpay();
+        const RENTAL_PRICE = await getRentalPrice();
         const total = RENTAL_PRICE * session.months;
 
-        if (!ownerConfig.ownerVioletpay || !ownerConfig.ownerVioletpay.apiKey) {
+        if (!ownerVioletpay || !ownerVioletpay.apiKey) {
             return ctx.reply('❌ Sistem pembayaran tidak tersedia');
         }
 
-        const { apiKey, secretKey, isProduction } = ownerConfig.ownerVioletpay;
+        const { apiKey, secretKey, isProduction } = ownerVioletpay;
         const customer = {
             nama: ctx.from.first_name || 'Customer',
             email: 'customer@email.com',
@@ -112,16 +124,12 @@ const registerRental = (bot, botManager) => {
                 const qrisData = paymentResult.qris_url || paymentResult.qr_url || paymentResult.payment_url;
                 let sentMsg;
 
-                // Try to assume it's a URL first
                 if (qrisData && (qrisData.startsWith('http') || qrisData.startsWith('https'))) {
                     try {
                         sentMsg = await ctx.replyWithPhoto(qrisData, { caption: msg, ...keyboard });
-                    } catch (e) {
-                        // fall through
-                    }
+                    } catch (e) { }
                 }
 
-                // If it wasn't a URL or sending as URL failed, try generating QR from string
                 if (!sentMsg && qrisData) {
                     try {
                         const qrBuffer = await QRCode.toBuffer(qrisData);
@@ -137,7 +145,7 @@ const registerRental = (bot, botManager) => {
 
                 session.messageId = sentMsg?.message_id;
 
-                startRentalPaymentMonitor(bot, botManager, ctx.from.id, session, ownerConfig);
+                startRentalPaymentMonitor(bot, botManager, ctx.from.id, session, ownerVioletpay);
 
                 return sentMsg;
             } else {
@@ -153,11 +161,10 @@ const registerRental = (bot, botManager) => {
         await ctx.answerCbQuery('⏳ Mengecek...');
         const session = getRentalSession(ctx.from.id);
 
-        delete require.cache[require.resolve('../../config/owner.json')];
-        const ownerConfig = require('../../config/owner.json');
-        if (!ownerConfig.ownerVioletpay) return ctx.reply('❌ Config error');
+        const ownerVioletpay = await getOwnerVioletpay();
+        if (!ownerVioletpay) return ctx.reply('❌ Config error');
 
-        const { apiKey, secretKey, isProduction } = ownerConfig.ownerVioletpay;
+        const { apiKey, secretKey, isProduction } = ownerVioletpay;
 
         try {
             const result = await violetpay.checkTransaction(
@@ -314,12 +321,12 @@ async function showRentalOffer(ctx, months, pricePerMonth, edit = false) {
     return ctx.reply(msg, keyboard);
 }
 
-function startRentalPaymentMonitor(bot, botManager, userId, session, ownerConfig) {
+function startRentalPaymentMonitor(bot, botManager, userId, session, ownerVioletpay) {
     if (session.monitorInterval) {
         clearInterval(session.monitorInterval);
     }
 
-    const { apiKey, secretKey, isProduction } = ownerConfig.ownerVioletpay;
+    const { apiKey, secretKey, isProduction } = ownerVioletpay;
 
     session.monitorInterval = setInterval(async () => {
         if (!session.refKode || session.step) {
@@ -375,4 +382,3 @@ function startRentalPaymentMonitor(bot, botManager, userId, session, ownerConfig
 }
 
 module.exports = { registerRental };
-

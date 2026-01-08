@@ -1,5 +1,5 @@
 const { Telegraf } = require('telegraf');
-const Database = require('../database/Database');
+const MySQLDatabase = require('../database/MySQLDatabase');
 const { registerStart } = require('../handlers');
 const { registerAdminHandlers } = require('../handlers/admin');
 const { registerMemberHandlers } = require('../handlers/member');
@@ -11,14 +11,14 @@ class BotInstance {
         this.botId = token.split(':')[0];
         this.botManager = botManager;
         this.bot = new Telegraf(token);
-        this.db = new Database(this.botId);
+        this.db = new MySQLDatabase(this.botId);
         this.isRunning = false;
-        this.config = this.loadBotConfig();
+        this.config = null;
     }
 
-    loadBotConfig() {
-        const data = this.botManager.loadBotsData();
-        return data.bots.find(b => b.id === this.botId) || {};
+    async loadBotConfig() {
+        const botData = await this.botManager.getBot(this.botId);
+        return botData || {};
     }
 
     registerHandlers() {
@@ -36,9 +36,12 @@ class BotInstance {
         if (this.isRunning) return;
 
         try {
-            // Sync adminUsername from bots.json config to settings.json
+            // Load config from MySQL
+            this.config = await this.loadBotConfig();
+
+            // Sync adminUsername from bots table to settings
             if (this.config.adminUsername) {
-                this.db.setSetting('adminUsername', this.config.adminUsername);
+                await this.db.setSetting('adminUsername', this.config.adminUsername);
             }
 
             this.registerHandlers();

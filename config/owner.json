@@ -1,9 +1,0 @@
-{
-    "ownerId": 7174723483,
-    "rentalPrice": 2000,
-    "ownerVioletpay": {
-        "apiKey": "tCgyfDHb4nZvms2apP83AALl17jzukB",
-        "secretKey": "LprBjbux9qA2aCovJfk7c8sl6A4HPZtgdyieh1wSD5n3L0zm",
-        "isProduction": true
-    }
-}

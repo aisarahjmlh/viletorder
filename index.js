@@ -1,6 +1,7 @@
+require('dotenv').config();
 const BotManager = require('./src/bot/BotManager');
 
-const MAIN_BOT_TOKEN = '8311880007:AAFFcyzKig_3AvmSmeoOd7VaeXzyYZN-k7M';
+const MAIN_BOT_TOKEN = process.env.BOT_TOKEN || '8391143563:AAFwg6OUwBRUaU8WO3b1RL4odsLc3UJUvwA';
 
 const botManager = new BotManager();
 

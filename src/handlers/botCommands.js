@@ -1,36 +1,21 @@
 const { isOwner } = require('../middleware/roleCheck');
-const Database = require('../database/Database');
+const MySQLDatabase = require('../database/MySQLDatabase');
 
 const parseDuration = (duration) => {
     if (!duration) return null;
-
     const match = duration.match(/^(\d+)(s|m|h|d|month)$/i);
     if (!match) return null;
-
     const value = parseInt(match[1]);
     const unit = match[2].toLowerCase();
-
     let ms = 0;
     switch (unit) {
-        case 's':
-            ms = value * 1000;
-            break;
-        case 'm':
-            ms = value * 60 * 1000;
-            break;
-        case 'h':
-            ms = value * 60 * 60 * 1000;
-            break;
-        case 'd':
-            ms = value * 24 * 60 * 60 * 1000;
-            break;
-        case 'month':
-            ms = value * 30 * 24 * 60 * 60 * 1000;
-            break;
-        default:
-            return null;
+        case 's': ms = value * 1000; break;
+        case 'm': ms = value * 60 * 1000; break;
+        case 'h': ms = value * 60 * 60 * 1000; break;
+        case 'd': ms = value * 24 * 60 * 60 * 1000; break;
+        case 'month': ms = value * 30 * 24 * 60 * 60 * 1000; break;
+        default: return null;
     }
-
     return new Date(Date.now() + ms).toISOString();
 };
 
@@ -50,48 +35,32 @@ const registerBotCommands = (bot, botManager) => {
         if (!adminUsername.startsWith('@')) {
             return ctx.reply('⚠️ Username harus diawali dengan @');
         }
-
         adminUsername = adminUsername.substring(1);
 
         let violetConfig = null;
         if (apiKey && secretKey) {
-            violetConfig = {
-                apiKey,
-                secretKey,
-                isProduction: true
-            };
+            violetConfig = { apiKey, secretKey, isProduction: true };
         }
 
         let expiresAt = null;
         if (duration) {
             expiresAt = parseDuration(duration);
-            if (!expiresAt) {
-                return ctx.reply('⚠️ Format durasi tidak valid. Contoh: 5s, 5m, 5d, 5month');
-            }
+            if (!expiresAt) return ctx.reply('⚠️ Format durasi tidak valid.');
         }
 
         ctx.reply('⏳ Menambahkan bot...');
-
         const result = await botManager.addBot(token, violetConfig, adminUsername, expiresAt);
 
         if (result.success) {
-            const db = new Database(result.botId);
-            db.setSetting('adminUsername', adminUsername);
+            const db = new MySQLDatabase(result.botId);
+            await db.setSetting('adminUsername', adminUsername);
 
-            let msg = `✅ Bot berhasil ditambahkan!\n\n` +
-                `🆔 ID: ${result.botId}\n` +
-                `🤖 @${result.username}\n` +
-                `👤 Admin: @${adminUsername}`;
-
-            if (violetConfig) {
-                msg += `\n💳 VioletPay: Configured`;
-            }
-
+            let msg = `✅ Bot berhasil ditambahkan!\n\n🆔 ID: ${result.botId}\n🤖 @${result.username}\n👤 Admin: @${adminUsername}`;
+            if (violetConfig) msg += `\n💳 VioletPay: Configured`;
             if (expiresAt) {
                 const expDate = new Date(expiresAt);
                 msg += `\n⏰ Expired: ${expDate.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })} WIB`;
             }
-
             ctx.reply(msg);
         } else {
             ctx.reply(`❌ Gagal: ${result.error}`);
@@ -100,9 +69,7 @@ const registerBotCommands = (bot, botManager) => {
 
     bot.command('delbot', isOwner(), async (ctx) => {
         const args = ctx.message.text.split(' ').slice(1);
-        if (args.length === 0) {
-            return ctx.reply('⚠️ Format: /delbot <botId>');
-        }
+        if (args.length === 0) return ctx.reply('⚠️ Format: /delbot <botId>');
 
         const botId = args[0];
         const result = await botManager.removeBot(botId);
@@ -115,11 +82,9 @@ const registerBotCommands = (bot, botManager) => {
     });
 
     bot.command('listbot', isOwner(), async (ctx) => {
-        const bots = botManager.getBots();
+        const bots = await botManager.getBots();
 
-        if (bots.length === 0) {
-            return ctx.reply('📭 Belum ada bot terdaftar.');
-        }
+        if (bots.length === 0) return ctx.reply('📭 Belum ada bot terdaftar.');
 
         let message = `📋 Daftar Bot (${bots.length})\n\n`;
         for (const [index, botData] of bots.entries()) {
@@ -137,41 +102,30 @@ const registerBotCommands = (bot, botManager) => {
 
             message += `${index + 1}. ${status} @${botData.username}\n   ID: ${botData.id}\n   Admin: @${adminUsername}${expInfo}\n\n`;
         }
-
         ctx.reply(message);
     });
 
     bot.command('addactive', isOwner(), async (ctx) => {
         const args = ctx.message.text.split(' ').slice(1);
         if (args.length < 2) {
-            return ctx.reply('⚠️ Format: /addactive <botId/@username> <durasi>\n\nContoh durasi:\n• 5s = 5 detik\n• 5m = 5 menit\n• 5h = 5 jam\n• 5d = 5 hari\n• 5month = 5 bulan');
+            return ctx.reply('⚠️ Format: /addactive <botId/@username> <durasi>\n\nContoh: 5s, 5m, 5h, 5d, 5month');
         }
 
         let identifier = args[0];
         const duration = args[1];
 
-        if (identifier.startsWith('@')) {
-            identifier = identifier.substring(1);
-        }
+        if (identifier.startsWith('@')) identifier = identifier.substring(1);
 
-        const data = botManager.loadBotsData();
-        const botData = data.bots.find(b =>
-            b.id === identifier ||
-            b.username.toLowerCase() === identifier.toLowerCase()
-        );
+        const bots = await botManager.getBots();
+        const botData = bots.find(b => b.id === identifier || b.username.toLowerCase() === identifier.toLowerCase());
 
-        if (!botData) {
-            return ctx.reply(`❌ Bot "${identifier}" tidak ditemukan`);
-        }
+        if (!botData) return ctx.reply(`❌ Bot "${identifier}" tidak ditemukan`);
 
         const match = duration.match(/^(\d+)(s|m|h|d|month)$/i);
-        if (!match) {
-            return ctx.reply('❌ Format durasi tidak valid. Contoh: 5s, 5m, 5h, 5d, 5month');
-        }
+        if (!match) return ctx.reply('❌ Format durasi tidak valid.');
 
         const value = parseInt(match[1]);
         const unit = match[2].toLowerCase();
-
         let ms = 0;
         switch (unit) {
             case 's': ms = value * 1000; break;
@@ -183,9 +137,8 @@ const registerBotCommands = (bot, botManager) => {
 
         const baseDate = botData.expiresAt ? new Date(botData.expiresAt) : new Date();
         const newExpiry = new Date(Math.max(baseDate.getTime(), Date.now()) + ms);
-        botData.expiresAt = newExpiry.toISOString();
 
-        botManager.saveBotsData(data);
+        await botManager.updateBotExpiration(botData.id, newExpiry.toISOString());
 
         const expStr = newExpiry.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
         ctx.reply(`✅ Masa aktif bot @${botData.username} diperpanjang!\n\n⏰ Expired baru: ${expStr} WIB`);

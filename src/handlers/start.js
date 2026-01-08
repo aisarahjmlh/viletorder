@@ -2,9 +2,9 @@ const { getRole } = require('../middleware/roleCheck');
 const { Markup } = require('telegraf');
 const violetpay = require('../violetpay');
 const QRCode = require('qrcode');
+const pool = require('../database/db');
 
 const ITEMS_PER_PAGE = 10;
-
 
 const qtySession = {};
 const editSession = {};
@@ -40,24 +40,6 @@ const isDepositMode = (botId, userId) => {
     return !!depositSession[`${botId}_${userId}`];
 };
 
-
-const getMemberSaldo = (db, userId) => {
-    const members = db.read('members.json');
-    const member = members.find(m => m.userId === userId);
-    return member ? (member.saldo || 0) : 0;
-};
-
-const updateMemberSaldo = (db, userId, amount) => {
-    const members = db.read('members.json');
-    const member = members.find(m => m.userId === userId);
-    if (member) {
-        member.saldo = (member.saldo || 0) + amount;
-        db.write('members.json', members);
-        return member.saldo;
-    }
-    return 0;
-};
-
 // Helper to format date in WIB
 const getFormattedDateWIB = () => {
     return new Date().toLocaleString('id-ID', {
@@ -73,11 +55,11 @@ const getFormattedDateWIB = () => {
 };
 
 // Helper to process welcome text with all placeholders
-const processWelcomeText = (text, db, userId, userName, extraVars = {}) => {
-    const stats = db.getStats();
-    const members = db.getMembers();
-    const saldo = getMemberSaldo(db, userId);
-    const totalOrder = db.getMemberOrderCount(userId);
+const processWelcomeText = async (text, db, userId, userName, extraVars = {}) => {
+    const stats = await db.getStats();
+    const members = await db.getMembers();
+    const saldo = await db.getMemberSaldo(userId);
+    const totalOrder = await db.getMemberOrderCount(userId);
 
     const ratingText = stats.rating && stats.rating.count > 0
         ? `${stats.rating.total} / 5.0 (${stats.rating.count} ulasan)`
@@ -93,7 +75,6 @@ const processWelcomeText = (text, db, userId, userName, extraVars = {}) => {
         .replace(/{totalpenjualan}/g, (stats.totalSales || 0).toLocaleString())
         .replace(/{totalomzet}/g, `Rp${(stats.totalOmzet || 0).toLocaleString()}`);
 
-    // Apply extra variables like {price}
     for (const [key, value] of Object.entries(extraVars)) {
         result = result.replace(new RegExp(`{${key}}`, 'g'), value);
     }
@@ -101,36 +82,56 @@ const processWelcomeText = (text, db, userId, userName, extraVars = {}) => {
     return result;
 };
 
+// Get owner config from MySQL
+const getOwnerConfig = async () => {
+    const [rows] = await pool.query('SELECT * FROM owner_config LIMIT 1');
+    if (rows.length === 0) {
+        return { ownerId: 0, rentalPrice: 50000, ownerVioletpay: null };
+    }
+    const row = rows[0];
+    return {
+        ownerId: row.owner_id,
+        rentalPrice: row.rental_price || 50000,
+        ownerVioletpay: row.violetpay_api_key ? {
+            apiKey: row.violetpay_api_key,
+            secretKey: row.violetpay_secret_key,
+            isProduction: row.violetpay_is_production
+        } : null
+    };
+};
+
+// Get bot expiration info from MySQL
+const getBotExpiration = async (botId) => {
+    const [rows] = await pool.query('SELECT expires_at FROM bots WHERE id = ?', [botId]);
+    if (rows.length === 0 || !rows[0].expires_at) return null;
+    return rows[0].expires_at;
+};
+
 const registerStart = (bot, db, botConfig = {}) => {
     bot.command('start', async (ctx) => {
-        // Show emoji first, then delete
         const emojiMsg = await ctx.reply('😁');
         await new Promise(r => setTimeout(r, 500));
         try { await ctx.deleteMessage(emojiMsg.message_id); } catch (e) { }
 
-        const role = getRole(db, ctx.from.id, ctx.from.username);
+        const role = await getRole(db, ctx.from.id, ctx.from.username);
         const roleText = role === 'owner' ? '👑 Owner' : role === 'admin' ? '🛡️ Admin' : '👤 Member';
 
-        const photo = db.getSetting('photo');
+        const photo = await db.getSetting('photo');
 
         if (role === 'member') {
             const isMainBot = db.botId === 'main';
 
             if (isMainBot) {
-                // Clear cache to always get latest price
-                delete require.cache[require.resolve('../../config/owner.json')];
-                const ownerConfig = require('../../config/owner.json');
+                const ownerConfig = await getOwnerConfig();
                 const RENTAL_PRICE = ownerConfig.rentalPrice || 50000;
-                const welcomeText = db.getSetting('welcomeText');
+                const welcomeText = await db.getSetting('welcomeText');
 
                 let msg;
                 if (welcomeText) {
-                    // Use custom welcome text with all placeholders
-                    msg = processWelcomeText(welcomeText, db, ctx.from.id, ctx.from.first_name, {
+                    msg = await processWelcomeText(welcomeText, db, ctx.from.id, ctx.from.first_name, {
                         price: `Rp${RENTAL_PRICE.toLocaleString()}`
                     });
                 } else {
-                    // Default message
                     msg = `╭ - - - - - - - - - - - - - - - - - - - ╮\n`;
                     msg += `┊  🤖 SEWA BOT STORE TELEGRAM\n`;
                     msg += `┊- - - - - - - - - - - - - - - - - - - - -\n`;
@@ -160,16 +161,13 @@ const registerStart = (bot, db, botConfig = {}) => {
                 return ctx.reply(msg, keyboard);
             }
 
-
-            const welcomeText = db.getSetting('welcomeText');
-            const saldo = getMemberSaldo(db, ctx.from.id);
+            const welcomeText = await db.getSetting('welcomeText');
+            const saldo = await db.getMemberSaldo(ctx.from.id);
             let msg;
 
             if (welcomeText) {
-                // Use custom welcome text with all placeholders
-                msg = processWelcomeText(welcomeText, db, ctx.from.id, ctx.from.first_name);
+                msg = await processWelcomeText(welcomeText, db, ctx.from.id, ctx.from.first_name);
             } else {
-                // Default message
                 msg = `Halo ${ctx.from.first_name}! 👋\n` +
                     `Saldo: Rp${saldo.toLocaleString()}\n\n` +
                     `Silakan pilih menu:`;
@@ -229,7 +227,7 @@ const registerStart = (bot, db, botConfig = {}) => {
         return ctx.reply(msg, keyboard);
     });
 
-    bot.action('menu_buy', (ctx) => {
+    bot.action('menu_buy', async (ctx) => {
         return showCategoryList(ctx, db, 1, true);
     });
 
@@ -240,34 +238,25 @@ const registerStart = (bot, db, botConfig = {}) => {
 
     bot.action('menu_admin', async (ctx) => {
         await ctx.answerCbQuery();
-
-        const fs = require('fs');
-        const path = require('path');
         let expInfo = '';
 
         try {
-            const botsPath = path.join(__dirname, '../../data/bots.json');
-            if (fs.existsSync(botsPath)) {
-                const botsData = JSON.parse(fs.readFileSync(botsPath, 'utf8'));
-                const myBot = botsData.bots.find(b => b.id === db.botId);
-
-                if (myBot && myBot.expiresAt) {
-                    const expDate = new Date(myBot.expiresAt);
-                    const now = new Date();
-                    const timeLeft = expDate - now;
-                    const daysLeft = Math.ceil(timeLeft / (1000 * 60 * 60 * 24));
-                    const expStr = expDate.toLocaleString('id-ID', {
-                        timeZone: 'Asia/Jakarta',
-                        day: 'numeric',
-                        month: 'long',
-                        year: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit'
-                    });
-
-                    const statusIcon = daysLeft <= 3 ? '⚠️' : '✅';
-                    expInfo = `\n┊  ${statusIcon} Expired: ${expStr} WIB\n┊  ⏱️ Sisa: ${daysLeft} hari lagi\n`;
-                }
+            const expiresAt = await getBotExpiration(db.botId);
+            if (expiresAt) {
+                const expDate = new Date(expiresAt);
+                const now = new Date();
+                const timeLeft = expDate - now;
+                const daysLeft = Math.ceil(timeLeft / (1000 * 60 * 60 * 24));
+                const expStr = expDate.toLocaleString('id-ID', {
+                    timeZone: 'Asia/Jakarta',
+                    day: 'numeric',
+                    month: 'long',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+                const statusIcon = daysLeft <= 3 ? '⚠️' : '✅';
+                expInfo = `\n┊  ${statusIcon} Expired: ${expStr} WIB\n┊  ⏱️ Sisa: ${daysLeft} hari lagi\n`;
             }
         } catch (e) {
             console.error('Error reading bot expiration:', e);
@@ -287,9 +276,10 @@ const registerStart = (bot, db, botConfig = {}) => {
         msg += `┊  📢 /broadcast - Broadcast ke member\n`;
         msg += `┊  💳 /setpg qris/qrisc - Set payment\n`;
         msg += `┊  👥 /listuser - Daftar member\n`;
-        msg += `┊ 👥  /checkbalance - Toal Saldo VIOLET-PAYMENT\n`;
+        msg += `┊  👥 /checkbalance - Total Saldo VIOLET-PAYMENT\n`;
         msg += `┊  💾 /backup - Backup database\n`;
         msg += `┊  📝 /setwelc - Set welcome text\n`;
+        msg += `┊  📝 /setrating - setrating 5.0 129\n`;
         if (expInfo) {
             msg += `┊- - - - - - - - - - - - - - - - - - - - -\n`;
             msg += `┊  INFORMASI AKTIF BOT:${expInfo}`;
@@ -307,34 +297,25 @@ const registerStart = (bot, db, botConfig = {}) => {
 
     bot.action('menu_owner', async (ctx) => {
         await ctx.answerCbQuery();
-
-        const fs = require('fs');
-        const path = require('path');
         let expInfo = '';
 
         try {
-            const botsPath = path.join(__dirname, '../../data/bots.json');
-            if (fs.existsSync(botsPath)) {
-                const botsData = JSON.parse(fs.readFileSync(botsPath, 'utf8'));
-                const myBot = botsData.bots.find(b => b.id === db.botId);
-
-                if (myBot && myBot.expiresAt) {
-                    const expDate = new Date(myBot.expiresAt);
-                    const now = new Date();
-                    const timeLeft = expDate - now;
-                    const daysLeft = Math.ceil(timeLeft / (1000 * 60 * 60 * 24));
-                    const expStr = expDate.toLocaleString('id-ID', {
-                        timeZone: 'Asia/Jakarta',
-                        day: 'numeric',
-                        month: 'long',
-                        year: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit'
-                    });
-
-                    const statusIcon = daysLeft <= 3 ? '⚠️' : '✅';
-                    expInfo = `\n┊  ${statusIcon} Expired: ${expStr} WIB\n┊  ⏱️ Sisa: ${daysLeft} hari lagi\n`;
-                }
+            const expiresAt = await getBotExpiration(db.botId);
+            if (expiresAt) {
+                const expDate = new Date(expiresAt);
+                const now = new Date();
+                const timeLeft = expDate - now;
+                const daysLeft = Math.ceil(timeLeft / (1000 * 60 * 60 * 24));
+                const expStr = expDate.toLocaleString('id-ID', {
+                    timeZone: 'Asia/Jakarta',
+                    day: 'numeric',
+                    month: 'long',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+                const statusIcon = daysLeft <= 3 ? '⚠️' : '✅';
+                expInfo = `\n┊  ${statusIcon} Expired: ${expStr} WIB\n┊  ⏱️ Sisa: ${daysLeft} hari lagi\n`;
             }
         } catch (e) {
             console.error('Error reading bot expiration:', e);
@@ -369,11 +350,11 @@ const registerStart = (bot, db, botConfig = {}) => {
 
     bot.action('back_to_start', async (ctx) => {
         await ctx.answerCbQuery();
-        const role = getRole(db, ctx.from.id, ctx.from.username);
+        const role = await getRole(db, ctx.from.id, ctx.from.username);
         const roleText = role === 'owner' ? '👑 Owner' : role === 'admin' ? '🛡️ Admin' : '👤 Member';
 
         if (role === 'member') {
-            const saldo = getMemberSaldo(db, ctx.from.id);
+            const saldo = await db.getMemberSaldo(ctx.from.id);
             const msg = `Halo ${ctx.from.first_name}! 👋\n` +
                 `Saldo: Rp${saldo.toLocaleString()}\n\n` +
                 `Silakan pilih menu:`;
@@ -411,20 +392,19 @@ const registerStart = (bot, db, botConfig = {}) => {
         return editCaption(ctx, msg, keyboard);
     });
 
-    bot.action(/cat_page_(\d+)/, (ctx) => {
+    bot.action(/cat_page_(\d+)/, async (ctx) => {
         const page = parseInt(ctx.match[1]);
         return showCategoryList(ctx, db, page, true);
     });
 
-    bot.action(/cat_(\d+)/, (ctx) => {
+    bot.action(/cat_(\d+)/, async (ctx) => {
         const index = parseInt(ctx.match[1]);
         return showProductsByCategory(ctx, db, index);
     });
 
-    bot.action('back_to_cat', (ctx) => {
+    bot.action('back_to_cat', async (ctx) => {
         return showCategoryList(ctx, db, 1, true);
     });
-
 
     bot.action(/^buy_(?!saldo_)(.+)$/, async (ctx) => {
         const code = ctx.match[1].trim();
@@ -457,10 +437,8 @@ const registerStart = (bot, db, botConfig = {}) => {
         return ctx.reply('✏️ Silakan kirim jumlah yang diinginkan (angka):', Markup.forceReply());
     });
 
-
     bot.on('text', async (ctx, next) => {
         const userId = ctx.from.id;
-
 
         if (isDepositMode(db.botId, userId)) {
             const amount = parseInt(ctx.message.text.replace(/[^0-9]/g, ''));
@@ -472,14 +450,12 @@ const registerStart = (bot, db, botConfig = {}) => {
             }
         }
 
-
         const code = getEditProduct(userId);
         if (code) {
             const qty = parseInt(ctx.message.text);
             if (!isNaN(qty) && qty > 0) {
                 setQty(userId, code, qty);
                 clearEditMode(userId);
-
                 await showPaymentNew(ctx, db, code);
             } else {
                 ctx.reply('❌ Harap masukkan angka yang valid.');
@@ -496,7 +472,6 @@ const registerStart = (bot, db, botConfig = {}) => {
         return processPurchase(ctx, db, code, botConfig);
     });
 
-
     bot.action(/^check_payment_(.+)$/, async (ctx) => {
         const refKode = ctx.match[1];
         await ctx.answerCbQuery('⏳ Mengecek...');
@@ -505,9 +480,7 @@ const registerStart = (bot, db, botConfig = {}) => {
             return ctx.reply('❌ VioletPay tidak dikonfigurasi');
         }
 
-        const pendingOrders = db.read('pending_orders.json') || [];
-        const order = pendingOrders.find(o => o.refKode === refKode);
-
+        const order = await db.getPendingOrder(refKode);
         if (!order) {
             return ctx.reply('❌ Transaksi tidak ditemukan / sudah selesai');
         }
@@ -516,26 +489,17 @@ const registerStart = (bot, db, botConfig = {}) => {
 
         try {
             const result = await violetpay.checkTransaction(
-                apiKey,
-                secretKey,
-                refKode,
-                order.refId,
-                isProduction
+                apiKey, secretKey, refKode, order.refId, isProduction
             );
-
 
             const txStatus = result.data ? result.data.status : result.status;
             const statusLower = String(txStatus).toLowerCase();
 
             if (statusLower === 'success' || statusLower === 'sukses' || statusLower === 'dibayar') {
-                const idx = pendingOrders.findIndex(o => o.refKode === refKode);
-                if (idx > -1) pendingOrders.splice(idx, 1);
-                db.write('pending_orders.json', pendingOrders);
-
+                await db.removePendingOrder(refKode);
 
                 if (order.type === 'deposit') {
-                    const newSaldo = updateMemberSaldo(db, order.userId, order.total);
-
+                    const newSaldo = await db.updateMemberSaldo(order.userId, order.total);
 
                     if (order.messageId) {
                         try { await bot.telegram.deleteMessage(order.userId, order.messageId); } catch (e) { }
@@ -545,25 +509,19 @@ const registerStart = (bot, db, botConfig = {}) => {
                         Markup.inlineKeyboard([[Markup.button.callback('🔙 Menu', 'back_to_cat')]]));
 
                 } else {
-
-                    const products = db.read('products.json');
-                    const product = products.find(p => p.code.toLowerCase() === order.productCode.toLowerCase());
+                    const product = await db.getProduct(order.productCode);
 
                     if (!product || product.stock.length < order.qty) {
                         return ctx.reply('❌ Stok tidak tersedia, hubungi admin. Saldo tidak terpotong.');
                     }
 
-                    const items = product.stock.splice(0, order.qty);
-                    db.write('products.json', products);
+                    const items = await db.removeStock(order.productCode, order.qty);
                     setQty(order.userId, order.productCode, 1);
                     return deliverProduct(bot, db, order, product, items);
                 }
 
             } else if (statusLower === 'kadaluarsa' || statusLower === 'expired') {
-                const idx = pendingOrders.findIndex(o => o.refKode === refKode);
-                if (idx > -1) pendingOrders.splice(idx, 1);
-                db.write('pending_orders.json', pendingOrders);
-
+                await db.removePendingOrder(refKode);
                 return ctx.reply('❌ Pembayaran sudah kadaluarsa', Markup.inlineKeyboard([[Markup.button.callback('🔙 Menu', 'back_to_cat')]]));
             } else {
                 return;
@@ -587,13 +545,7 @@ const registerStart = (bot, db, botConfig = {}) => {
             await ctx.deleteMessage();
         } catch (e) { }
 
-        const pendingOrders = db.read('pending_orders.json') || [];
-        const idx = pendingOrders.findIndex(o => o.refKode === refKode);
-        if (idx > -1) {
-            pendingOrders.splice(idx, 1);
-            db.write('pending_orders.json', pendingOrders);
-        }
-
+        await db.removePendingOrder(refKode);
         return ctx.reply('🚫 Pembayaran Dibatalkan');
     });
 
@@ -601,10 +553,8 @@ const registerStart = (bot, db, botConfig = {}) => {
         ctx.reply(`🆔 ID: ${ctx.from.id}`);
     });
 
-
     startPaymentMonitor(bot, db, botConfig);
 };
-
 
 async function processDeposit(ctx, db, amount, botConfig) {
     if (!botConfig.violetpay || !botConfig.violetpay.apiKey) {
@@ -620,15 +570,10 @@ async function processDeposit(ctx, db, amount, botConfig) {
     };
 
     try {
-        const channelPayment = db.getSetting('channelPayment') || 'qris';
+        const channelPayment = await db.getSetting('channelPayment') || 'qris';
         const paymentResult = await violetpay.createQrisPayment(
-            apiKey,
-            secretKey,
-            amount,
-            customer,
-            `Deposit Saldo Rp${amount}`,
-            isProduction,
-            channelPayment
+            apiKey, secretKey, amount, customer,
+            `Deposit Saldo Rp${amount}`, isProduction, channelPayment
         );
 
         if (paymentResult.success || paymentResult.status) {
@@ -650,20 +595,15 @@ async function processDeposit(ctx, db, amount, botConfig) {
             buttons.push([Markup.button.callback('❌ Batal', `cancel_payment_${paymentResult.refKode}`)]);
 
             const keyboard = Markup.inlineKeyboard(buttons);
-
             const qrisData = paymentResult.qris_url || paymentResult.qr_url || paymentResult.payment_url || paymentResult.qris;
             let sentMsg;
 
-            // Try to assume it's a URL first
             if (qrisData && (qrisData.startsWith('http') || qrisData.startsWith('https'))) {
                 try {
                     sentMsg = await ctx.replyWithPhoto(qrisData, { caption: msg, ...keyboard });
-                } catch (e) {
-                    // fall through if failed
-                }
+                } catch (e) { }
             }
 
-            // If it wasn't a URL or sending as URL failed, try generating QR from string
             if (!sentMsg && qrisData) {
                 try {
                     const qrBuffer = await QRCode.toBuffer(qrisData);
@@ -677,20 +617,16 @@ async function processDeposit(ctx, db, amount, botConfig) {
                 sentMsg = await ctx.reply(msg, keyboard);
             }
 
-            const pendingOrders = db.read('pending_orders.json') || [];
-            pendingOrders.push({
+            await db.addPendingOrder({
                 refKode: paymentResult.refKode,
                 refId: paymentResult.id_reference || paymentResult.ref_id,
                 userId: userId,
                 type: 'deposit',
                 total: amount,
-                createdAt: Date.now(),
                 messageId: sentMsg ? sentMsg.message_id : null
             });
-            db.write('pending_orders.json', pendingOrders);
 
         } else {
-
             const resultData = paymentResult.data || {};
             const statusMsg = resultData.status || '';
 
@@ -705,10 +641,7 @@ async function processDeposit(ctx, db, amount, botConfig) {
     }
 }
 
-
-
 async function deliverProduct(bot, db, order, product, items) {
-
     if (order.messageId) {
         try {
             await bot.telegram.deleteMessage(order.userId, order.messageId);
@@ -728,19 +661,16 @@ async function deliverProduct(bot, db, order, product, items) {
     });
     msg += `╰ - - - - - - - - - - - - - - - - - - - ╯`;
 
-    // Track sales stats
     try {
-        db.updateStats(1, order.total); // 1 sale, add omzet
-        db.incrementMemberOrder(order.userId);
+        await db.updateStats(1, order.total);
+        await db.incrementMemberOrder(order.userId);
     } catch (e) {
         console.error('Failed to track sale stats:', e.message);
     }
 
-
     try {
         if (order.userId) {
-
-            const photo = db.getSetting('photo');
+            const photo = await db.getSetting('photo');
             const keyboard = Markup.inlineKeyboard([[Markup.button.callback('🔙 Menu', 'back_to_cat')]]);
 
             if (photo) {
@@ -758,21 +688,16 @@ async function deliverProduct(bot, db, order, product, items) {
     }
 }
 
-
 function startPaymentMonitor(bot, db, botConfig) {
     if (!botConfig.violetpay || !botConfig.violetpay.apiKey) return;
 
     const { apiKey, secretKey, isProduction } = botConfig.violetpay;
 
     setInterval(async () => {
-        const pendingOrders = db.read('pending_orders.json') || [];
+        const pendingOrders = await db.getPendingOrders();
         if (pendingOrders.length === 0) return;
 
-
-        const ordersToCheck = [...pendingOrders];
-        let changes = false;
-
-        for (const order of ordersToCheck) {
+        for (const order of pendingOrders) {
             try {
                 const result = await violetpay.checkTransaction(
                     apiKey, secretKey, order.refKode, order.refId, isProduction
@@ -782,12 +707,8 @@ function startPaymentMonitor(bot, db, botConfig) {
                 const statusLower = String(txStatus).toLowerCase();
 
                 if (statusLower === 'success' || statusLower === 'sukses' || statusLower === 'dibayar') {
-
-
-
                     if (order.type === 'deposit') {
-                        updateMemberSaldo(db, order.userId, order.total);
-
+                        await db.updateMemberSaldo(order.userId, order.total);
 
                         if (order.messageId) {
                             try { await bot.telegram.deleteMessage(order.userId, order.messageId); } catch (e) { }
@@ -800,81 +721,57 @@ function startPaymentMonitor(bot, db, botConfig) {
                         } catch (e) { }
 
                     } else {
-
-                        const products = db.read('products.json');
-                        const product = products.find(p => p.code.toLowerCase() === order.productCode.toLowerCase());
+                        const product = await db.getProduct(order.productCode);
 
                         if (product && product.stock.length >= order.qty) {
-                            const items = product.stock.splice(0, order.qty);
-                            db.write('products.json', products);
-
+                            const items = await db.removeStock(order.productCode, order.qty);
                             await deliverProduct(bot, db, order, product, items);
                             setQty(order.userId, order.productCode, 1);
                         }
                     }
 
-
-                    const idx = pendingOrders.findIndex(o => o.refKode === order.refKode);
-                    if (idx > -1) {
-                        pendingOrders.splice(idx, 1);
-                        changes = true;
-                    }
+                    await db.removePendingOrder(order.refKode);
 
                 } else if (statusLower === 'kadaluarsa' || statusLower === 'expired') {
+                    await db.removePendingOrder(order.refKode);
 
-                    const idx = pendingOrders.findIndex(o => o.refKode === order.refKode);
-                    if (idx > -1) {
-                        pendingOrders.splice(idx, 1);
-                        changes = true;
-
-                        try {
-                            if (order.userId) {
-                                await bot.telegram.sendMessage(order.userId, '❌ Pembayaran QRIS telah kadaluarsa.',
-                                    Markup.inlineKeyboard([[Markup.button.callback('🔙 Menu', 'back_to_cat')]])
-                                );
-                            }
-                        } catch (e) { }
-                    }
+                    try {
+                        if (order.userId) {
+                            await bot.telegram.sendMessage(order.userId, '❌ Pembayaran QRIS telah kadaluarsa.',
+                                Markup.inlineKeyboard([[Markup.button.callback('🔙 Menu', 'back_to_cat')]])
+                            );
+                        }
+                    } catch (e) { }
                 }
             } catch (error) {
                 console.error(`Error checking payment ${order.refKode}:`, error.message);
             }
-        }
-
-        if (changes) {
-            db.write('pending_orders.json', pendingOrders);
         }
     }, 5000);
 }
 
 async function editCaption(ctx, caption, keyboard) {
     try {
-
         const msg = ctx.callbackQuery?.message;
         if (msg?.photo || msg?.caption !== undefined) {
-
             return await ctx.editMessageCaption(caption, keyboard);
         } else {
-
             return await ctx.editMessageText(caption, keyboard);
         }
     } catch (e) {
-
         try {
             return await ctx.editMessageCaption(caption, keyboard);
         } catch (e2) {
             try {
                 return await ctx.editMessageText(caption, keyboard);
-            } catch (e3) {
-
-            }
+            } catch (e3) { }
         }
     }
 }
 
 async function showCategoryList(ctx, db, page, edit = false) {
-    const products = db.read('products.json');
-    const categories = db.read('categories.json');
+    const products = await db.getProducts();
+    const categories = await db.getCategories();
 
     if (categories.length === 0) {
         const msg = '📭 Belum ada produk tersedia';
@@ -882,10 +779,10 @@ async function showCategoryList(ctx, db, page, edit = false) {
         return ctx.reply(msg);
     }
 
-    const catWithStock = categories.map((cat, idx) => {
-        const prods = products.filter(p => p.category.toLowerCase() === cat.name.toLowerCase());
+    const catWithStock = categories.map((catName, idx) => {
+        const prods = products.filter(p => p.category && p.category.toLowerCase() === catName.toLowerCase());
         const totalStock = prods.reduce((sum, p) => sum + p.stock.length, 0);
-        return { ...cat, index: idx, stock: totalStock };
+        return { name: catName, index: idx, stock: totalStock };
     });
 
     const totalPages = Math.ceil(catWithStock.length / ITEMS_PER_PAGE);
@@ -925,7 +822,7 @@ async function showCategoryList(ctx, db, page, edit = false) {
 
     if (edit) return editCaption(ctx, msg, keyboard);
 
-    const photo = db.getSetting('photo');
+    const photo = await db.getSetting('photo');
     if (photo) {
         try { return await ctx.replyWithPhoto(photo, { caption: msg, ...keyboard }); }
         catch (e) { }
@@ -934,23 +831,23 @@ async function showCategoryList(ctx, db, page, edit = false) {
 }
 
 async function showProductsByCategory(ctx, db, categoryIndex) {
-    const categories = db.read('categories.json');
-    const products = db.read('products.json');
+    const categories = await db.getCategories();
+    const products = await db.getProducts();
 
     if (!categories[categoryIndex]) {
         return editCaption(ctx, 'Category tidak ditemukan', {});
     }
 
-    const cat = categories[categoryIndex];
-    const prods = products.filter(p => p.category.toLowerCase() === cat.name.toLowerCase());
+    const catName = categories[categoryIndex];
+    const prods = products.filter(p => p.category && p.category.toLowerCase() === catName.toLowerCase());
 
     if (prods.length === 0) {
         const keyboard = Markup.inlineKeyboard([[Markup.button.callback('🔙 Kembali', 'back_to_cat')]]);
-        return editCaption(ctx, `📭 Belum ada produk di ${cat.name}`, keyboard);
+        return editCaption(ctx, `📭 Belum ada produk di ${catName}`, keyboard);
     }
 
     let msg = `╭ - - - - - - - - - - - - - - - - - - - ╮\n`;
-    msg += `┊  ${cat.name.toUpperCase()}\n`;
+    msg += `┊  ${catName.toUpperCase()}\n`;
     msg += `┊- - - - - - - - - - - - - - - - - - - - -\n`;
 
     prods.forEach((p) => {
@@ -970,8 +867,7 @@ async function showProductsByCategory(ctx, db, categoryIndex) {
 }
 
 async function showPayment(ctx, db, code) {
-    const products = db.read('products.json');
-    const product = products.find(p => p.code.toLowerCase() === code.toLowerCase());
+    const product = await db.getProduct(code);
     const userId = ctx.from.id;
 
     if (!product) {
@@ -1014,10 +910,8 @@ async function showPayment(ctx, db, code) {
     return editCaption(ctx, msg, keyboard);
 }
 
-
 async function showPaymentNew(ctx, db, code) {
-    const products = db.read('products.json');
-    const product = products.find(p => p.code.toLowerCase() === code.toLowerCase());
+    const product = await db.getProduct(code);
     const userId = ctx.from.id;
 
     if (!product) {
@@ -1056,8 +950,7 @@ async function showPaymentNew(ctx, db, code) {
 }
 
 async function processPurchase(ctx, db, code, botConfig) {
-    const products = db.read('products.json');
-    const product = products.find(p => p.code.toLowerCase() === code.toLowerCase());
+    const product = await db.getProduct(code);
     const userId = ctx.from.id;
     const qty = getQty(userId, code);
 
@@ -1071,16 +964,11 @@ async function processPurchase(ctx, db, code, botConfig) {
 
     const total = product.price * qty;
 
-
     if (!botConfig.violetpay || !botConfig.violetpay.apiKey) {
-
-        const items = product.stock.splice(0, qty);
-        db.write('products.json', products);
+        const items = await db.removeStock(code, qty);
         setQty(userId, code, 1);
-
         return deliverProduct(ctx, db, { qty, total, userId }, product, items);
     }
-
 
     const { apiKey, secretKey, isProduction } = botConfig.violetpay;
     const customer = {
@@ -1090,19 +978,13 @@ async function processPurchase(ctx, db, code, botConfig) {
     };
 
     try {
-        const channelPayment = db.getSetting('channelPayment') || 'qris';
+        const channelPayment = await db.getSetting('channelPayment') || 'qris';
         const paymentResult = await violetpay.createQrisPayment(
-            apiKey,
-            secretKey,
-            total,
-            customer,
-            `${product.name} x${qty}`,
-            isProduction,
-            channelPayment
+            apiKey, secretKey, total, customer,
+            `${product.name} x${qty}`, isProduction, channelPayment
         );
 
         if (paymentResult.success || paymentResult.status) {
-
             let msg = `╭ - - - - - - - - - - - - - - - - - - - ╮\n`;
             msg += `┊  💳 PEMBAYARAN QRIS\n`;
             msg += `┊- - - - - - - - - - - - - - - - - - - - -\n`;
@@ -1123,43 +1005,33 @@ async function processPurchase(ctx, db, code, botConfig) {
             buttons.push([Markup.button.callback('❌ Batal', `cancel_payment_${paymentResult.refKode}`)]);
 
             const keyboard = Markup.inlineKeyboard(buttons);
-
-
             const qrisUrl = paymentResult.qris_url || paymentResult.qr_url || paymentResult.payment_url || paymentResult.qris;
             let sentMsg;
 
             if (qrisUrl) {
                 try {
                     sentMsg = await ctx.replyWithPhoto(qrisUrl, { caption: msg, ...keyboard });
-                } catch (e) {
-
-                }
+                } catch (e) { }
             }
 
             if (!sentMsg) {
                 sentMsg = await editCaption(ctx, msg, keyboard);
             }
 
-
-            const pendingOrders = db.read('pending_orders.json') || [];
-            pendingOrders.push({
+            await db.addPendingOrder({
                 refKode: paymentResult.refKode,
                 refId: paymentResult.id_reference || paymentResult.ref_id,
                 userId: userId,
+                type: 'purchase',
                 productCode: code,
                 qty: qty,
                 total: total,
-                createdAt: Date.now(),
                 messageId: sentMsg ? sentMsg.message_id : null
             });
-            db.write('pending_orders.json', pendingOrders);
 
             return sentMsg;
         } else {
-
             let errorMsg = paymentResult.message || paymentResult.error || 'Unknown error';
-
-
             const resultData = paymentResult.data || {};
             const statusMsg = resultData.status || '';
 
@@ -1189,24 +1061,12 @@ async function processPurchase(ctx, db, code, botConfig) {
 }
 
 async function processPurchaseSaldo(ctx, db, code) {
-    const products = db.read('products.json');
-    console.log(`[DEBUG] Buying Saldo. Code: '${code}'`);
-    console.log(`[DEBUG] Available products:`, products.map(p => p.code));
-
-    const product = products.find(p => p.code.toLowerCase() === code.toLowerCase());
-    console.log(`[DEBUG] Found product:`, product ? product.name : 'null');
-
+    const product = await db.getProduct(code);
     const userId = ctx.from.id;
     const qty = getQty(userId, code);
 
     if (!product) {
-        const productCodes = products.map(p => p.code).join(', ');
-        const debugMsg = `❌ Produk tidak ditemukan.\n\n` +
-            `ℹ️ Debug Info:\n` +
-            `Searched Code: '${code}'\n` +
-            `Total Products: ${products.length}\n` +
-            `Available Codes: ${productCodes}`;
-        return editCaption(ctx, debugMsg, Markup.inlineKeyboard([[Markup.button.callback('🔙 Kembali', 'back_to_cat')]]));
+        return editCaption(ctx, '❌ Produk tidak ditemukan.', Markup.inlineKeyboard([[Markup.button.callback('🔙 Kembali', 'back_to_cat')]]));
     }
 
     if (product.stock.length === 0) {
@@ -1218,7 +1078,7 @@ async function processPurchaseSaldo(ctx, db, code) {
     }
 
     const total = product.price * qty;
-    const currentSaldo = getMemberSaldo(db, userId);
+    const currentSaldo = await db.getMemberSaldo(userId);
 
     if (currentSaldo < total) {
         const kurang = total - currentSaldo;
@@ -1240,17 +1100,9 @@ async function processPurchaseSaldo(ctx, db, code) {
         return editCaption(ctx, msg, keyboard);
     }
 
-
-    updateMemberSaldo(db, userId, -total);
-
-
-    const items = product.stock.splice(0, qty);
-    db.write('products.json', products);
-
-
+    await db.updateMemberSaldo(userId, -total);
+    const items = await db.removeStock(code, qty);
     setQty(userId, code, 1);
-
-
     return deliverProduct(ctx, db, { qty, total, userId }, product, items);
 }
 

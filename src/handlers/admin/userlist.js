@@ -1,14 +1,15 @@
 const { Markup } = require('telegraf');
+const { getOwnerId } = require('../../middleware/roleCheck');
 
 const USERS_PER_PAGE = 10;
 
 const registerUserList = (bot, db) => {
-    bot.command('listuser', (ctx) => {
-        const ownerConfig = require('../../../config/owner.json');
-        const adminUsername = db.getSetting('adminUsername');
+    bot.command('listuser', async (ctx) => {
+        const ownerId = await getOwnerId();
+        const adminUsername = await db.getSetting('adminUsername');
         const userUsername = ctx.from.username;
 
-        const isOwner = ctx.from.id === ownerConfig.ownerId;
+        const isOwner = ctx.from.id === ownerId;
         const adminList = adminUsername ? adminUsername.split(',').map(a => a.trim().toLowerCase()) : [];
         const isAdmin = userUsername && adminList.includes(userUsername.toLowerCase());
 
@@ -27,7 +28,7 @@ const registerUserList = (bot, db) => {
 };
 
 async function showUserList(ctx, db, page, edit = false) {
-    const members = db.read('members.json') || [];
+    const members = await db.getMembers();
 
     if (members.length === 0) {
         const msg = '📭 Belum ada member terdaftar';
@@ -54,7 +55,6 @@ async function showUserList(ctx, db, page, edit = false) {
 
     msg += `╰ - - - - - - - - - - - - - - - - - - - ╯`;
 
-    // Build pagination buttons
     const buttons = [];
     const navRow = [];
 
