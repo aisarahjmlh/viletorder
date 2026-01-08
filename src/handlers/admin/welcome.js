@@ -125,9 +125,12 @@ const registerWelcome = (bot, db) => {
     });
 
     bot.command('setprice', (ctx) => {
-        const ownerConfig = require('../../../config/owner.json');
         const fs = require('fs');
         const path = require('path');
+
+        // Clear cache to always get latest price
+        delete require.cache[require.resolve('../../../config/owner.json')];
+        const ownerConfig = require('../../../config/owner.json');
 
         // Only owner can set price
         if (ctx.from.id !== ownerConfig.ownerId) {

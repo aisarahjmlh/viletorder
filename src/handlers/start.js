@@ -117,6 +117,8 @@ const registerStart = (bot, db, botConfig = {}) => {
             const isMainBot = db.botId === 'main';
 
             if (isMainBot) {
+                // Clear cache to always get latest price
+                delete require.cache[require.resolve('../../config/owner.json')];
                 const ownerConfig = require('../../config/owner.json');
                 const RENTAL_PRICE = ownerConfig.rentalPrice || 50000;
                 const welcomeText = db.getSetting('welcomeText');
